@@ -722,11 +722,11 @@ public class MainActivity extends Activity {
                         }
                     });
                 } catch (final Exception e) {
-                    appendLog("SEND", "failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
                             sendButton.setEnabled(true);
+                            appendLog("SEND", "failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
                             setStatus("傳送失敗：" + e.getMessage());
                         }
                     });
