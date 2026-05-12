@@ -18,6 +18,7 @@ final class GoogleMapsShareParser {
             "([-+]?\\d+(?:\\.\\d+)?),\\s*([-+]?\\d+(?:\\.\\d+)?)");
     private static final Pattern BANG_PATTERN = Pattern.compile(
             "!3d([-+]?\\d+(?:\\.\\d+)?)!4d([-+]?\\d+(?:\\.\\d+)?)");
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+");
 
     private GoogleMapsShareParser() {
     }
@@ -31,6 +32,7 @@ final class GoogleMapsShareParser {
         if (source.length() == 0) {
             return null;
         }
+        String decodedSource = Uri.decode(source);
 
         SharedPlace geo = parseByPattern(GEO_PATTERN, source, source);
         if (geo != null) {
@@ -47,9 +49,31 @@ final class GoogleMapsShareParser {
             return bang;
         }
 
+        if (!decodedSource.equals(source)) {
+            SharedPlace decodedBang = parseByPattern(BANG_PATTERN, decodedSource, source);
+            if (decodedBang != null) {
+                return decodedBang;
+            }
+
+            SharedPlace decodedAt = parseByPattern(AT_PATTERN, decodedSource, source);
+            if (decodedAt != null) {
+                return decodedAt;
+            }
+        }
+
         SharedPlace query = parseUriQuery(source);
         if (query != null) {
             return query;
+        }
+
+        SharedPlace path = parseUriPath(source);
+        if (path != null) {
+            return path;
+        }
+
+        SharedPlace nested = parseNestedUrls(source);
+        if (nested != null) {
+            return nested;
         }
 
         return parseByPattern(QUERY_COORD_PATTERN, source, source);
@@ -82,6 +106,11 @@ final class GoogleMapsShareParser {
                         addCandidate(queries, Uri.decode(segments.get(i + 1)));
                         break;
                     }
+                }
+
+                String link = uri.getQueryParameter("link");
+                if (link != null && link.length() > 0) {
+                    addGeocodeQueriesFromUrl(queries, link);
                 }
             } catch (Exception ignored) {
             }
@@ -121,10 +150,57 @@ final class GoogleMapsShareParser {
             }
 
             String destination = uri.getQueryParameter("destination");
-            return parseCoordValue(destination, text);
+            place = parseCoordValue(destination, text);
+            if (place != null) {
+                return place;
+            }
+
+            String link = uri.getQueryParameter("link");
+            if (link != null && link.length() > 0 && !link.equals(text)) {
+                return parse(link);
+            }
+            return null;
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static SharedPlace parseUriPath(String text) {
+        String url = firstUrl(text);
+        if (url == null) {
+            return null;
+        }
+
+        try {
+            Uri uri = Uri.parse(url);
+            List<String> segments = uri.getPathSegments();
+            for (int i = 0; i < segments.size() - 1; i++) {
+                if ("place".equalsIgnoreCase(segments.get(i))) {
+                    SharedPlace place = parseCoordValue(Uri.decode(segments.get(i + 1)), text);
+                    if (place != null) {
+                        return place;
+                    }
+                }
+            }
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static SharedPlace parseNestedUrls(String text) {
+        Matcher matcher = URL_PATTERN.matcher(text);
+        while (matcher.find()) {
+            String url = trimUrl(matcher.group());
+            if (url.equals(text)) {
+                continue;
+            }
+            SharedPlace place = parse(url);
+            if (place != null) {
+                return place;
+            }
+        }
+        return null;
     }
 
     private static SharedPlace parseCoordValue(String value, String source) {
@@ -207,7 +283,33 @@ final class GoogleMapsShareParser {
     }
 
     private static String firstUrl(String text) {
-        Matcher matcher = Pattern.compile("https?://\\S+").matcher(text);
-        return matcher.find() ? matcher.group() : null;
+        Matcher matcher = URL_PATTERN.matcher(text);
+        return matcher.find() ? trimUrl(matcher.group()) : null;
+    }
+
+    private static void addGeocodeQueriesFromUrl(List<String> queries, String url) {
+        try {
+            Uri uri = Uri.parse(url);
+            List<String> segments = uri.getPathSegments();
+            for (int i = 0; i < segments.size() - 1; i++) {
+                if ("place".equalsIgnoreCase(segments.get(i))) {
+                    addCandidate(queries, Uri.decode(segments.get(i + 1)));
+                    return;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String trimUrl(String url) {
+        while (url.endsWith(".")
+                || url.endsWith(",")
+                || url.endsWith(")")
+                || url.endsWith("]")
+                || url.endsWith("\"")
+                || url.endsWith("'")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        return url;
     }
 }

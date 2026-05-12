@@ -13,6 +13,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.location.Address;
 import android.location.Geocoder;
 import android.net.Uri;
@@ -45,8 +46,19 @@ public class MainActivity extends Activity {
     private static final String PREF_LOG = "log";
     private static final String SMARTPHONE_LINK_PACKAGE = "com.garmin.android.apps.phonelink";
     private static final int MAX_LOG_CHARS = 30000;
+    private static final int COLOR_BACKGROUND = 0xFFF4F6F8;
+    private static final int COLOR_SURFACE = 0xFFFFFFFF;
+    private static final int COLOR_PRIMARY = 0xFF00704A;
+    private static final int COLOR_PRIMARY_DARK = 0xFF005C3D;
+    private static final int COLOR_TEXT = 0xFF17212B;
+    private static final int COLOR_MUTED = 0xFF64707D;
+    private static final int COLOR_BORDER = 0xFFD8DEE5;
+    private static final int COLOR_WARNING = 0xFF7A4E00;
+    private static final int COLOR_DIAGNOSTIC = 0xFF243447;
 
     private final List<BluetoothDevice> pairedDevices = new ArrayList<BluetoothDevice>();
+    private final List<BluetoothDevice> garminDevices = new ArrayList<BluetoothDevice>();
+    private final List<BluetoothDevice> deviceMenuDevices = new ArrayList<BluetoothDevice>();
     private ArrayAdapter<String> deviceAdapter;
     private Spinner deviceSpinner;
     private EditText nameInput;
@@ -62,7 +74,10 @@ public class MainActivity extends Activity {
     private Button smartphoneLinkButton;
     private SharedPreferences preferences;
     private boolean loadingDevices;
+    private boolean diagnosticsVisible;
     private boolean logVisible;
+    private String selectedDeviceAddress = "";
+    private int selectedDeviceMenuIndex = -1;
     private final StringBuilder logBuffer = new StringBuilder();
 
     @Override
@@ -99,34 +114,39 @@ public class MainActivity extends Activity {
 
     private void buildUi() {
         ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(false);
+        scrollView.setBackgroundColor(COLOR_BACKGROUND);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        int padding = dp(18);
+        int padding = dp(16);
         root.setPadding(padding, padding, padding, padding);
         scrollView.addView(root);
 
         TextView title = new TextView(this);
         title.setText("Garmin Map Share");
-        title.setTextSize(24);
+        title.setTextSize(28);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(COLOR_TEXT);
         root.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("從 Google Maps 分享座標，透過 BT 傳送到 Garmin GPS 車機。");
+        subtitle.setText("從 Google Maps 分享位置，確認座標後傳送到 Garmin 車機。");
         subtitle.setTextSize(14);
-        subtitle.setPadding(0, dp(6), 0, dp(14));
+        subtitle.setTextColor(COLOR_MUTED);
+        subtitle.setPadding(0, dp(4), 0, dp(14));
         root.addView(subtitle);
 
-        nameInput = labeledEdit(root, "名稱", InputType.TYPE_CLASS_TEXT);
-        latInput = labeledEdit(root, "緯度 lat", InputType.TYPE_CLASS_NUMBER
+        LinearLayout destinationSection = section(root, "目的地");
+        nameInput = labeledEdit(destinationSection, "名稱", InputType.TYPE_CLASS_TEXT);
+        latInput = labeledEdit(destinationSection, "緯度 lat", InputType.TYPE_CLASS_NUMBER
                 | InputType.TYPE_NUMBER_FLAG_DECIMAL
                 | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        lonInput = labeledEdit(root, "經度 lon", InputType.TYPE_CLASS_NUMBER
+        lonInput = labeledEdit(destinationSection, "經度 lon", InputType.TYPE_CLASS_NUMBER
                 | InputType.TYPE_NUMBER_FLAG_DECIMAL
                 | InputType.TYPE_NUMBER_FLAG_SIGNED);
 
-        TextView mapLabel = label("Map 位置預覽");
-        root.addView(mapLabel);
+        LinearLayout mapSection = section(root, "Map 位置預覽");
 
         mapPreview = new WebView(this);
         WebSettings webSettings = mapPreview.getSettings();
@@ -134,19 +154,21 @@ public class MainActivity extends Activity {
         webSettings.setDomStorageEnabled(true);
         LinearLayout.LayoutParams mapParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(220));
-        mapParams.setMargins(0, dp(6), 0, dp(8));
+                dp(230));
+        mapParams.setMargins(0, dp(8), 0, dp(10));
         mapPreview.setLayoutParams(mapParams);
+        mapPreview.setBackgroundColor(Color.WHITE);
         mapPreview.loadData(
-                "<html><body style='font-family:sans-serif;color:#666;padding:12px'>等待座標...</body></html>",
+                "<html><body style='font-family:sans-serif;color:#64707D;padding:16px'>等待座標...</body></html>",
                 "text/html",
                 "UTF-8");
-        root.addView(mapPreview);
+        mapSection.addView(mapPreview);
 
         openGoogleMapsButton = new Button(this);
         openGoogleMapsButton.setText("用 Google Maps 開啟此座標");
         openGoogleMapsButton.setAllCaps(false);
-        root.addView(openGoogleMapsButton);
+        styleButton(openGoogleMapsButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        mapSection.addView(openGoogleMapsButton, buttonParams(dp(50), 0, 0, 0, dp(8)));
         openGoogleMapsButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -156,7 +178,9 @@ public class MainActivity extends Activity {
 
         Button previewButton = new Button(this);
         previewButton.setText("更新傳送內容預覽");
-        root.addView(previewButton);
+        previewButton.setAllCaps(false);
+        styleButton(previewButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        mapSection.addView(previewButton, buttonParams(dp(50), 0, 0, 0, 0));
         previewButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -164,25 +188,31 @@ public class MainActivity extends Activity {
             }
         });
 
-        TextView deviceLabel = label("已配對 Garmin 車機");
-        root.addView(deviceLabel);
+        LinearLayout deviceSection = section(root, "Garmin 車機");
 
         deviceAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<String>());
         deviceAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         deviceSpinner = new Spinner(this);
         deviceSpinner.setAdapter(deviceAdapter);
-        root.addView(deviceSpinner);
+        deviceSection.addView(deviceSpinner, buttonParams(dp(52), 0, dp(8), 0, dp(8)));
         deviceSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if (loadingDevices) {
                     return;
                 }
-                if (position >= 0 && position < pairedDevices.size()) {
-                    preferences.edit()
-                            .putString(PREF_DEVICE_ADDRESS, pairedDevices.get(position).getAddress())
-                            .apply();
+                if (position < 0 || position >= deviceMenuDevices.size()) {
+                    return;
                 }
+                BluetoothDevice device = deviceMenuDevices.get(position);
+                if (device == null) {
+                    if (selectedDeviceMenuIndex >= 0 && selectedDeviceMenuIndex < deviceMenuDevices.size()) {
+                        deviceSpinner.setSelection(selectedDeviceMenuIndex);
+                    }
+                    return;
+                }
+                selectedDeviceMenuIndex = position;
+                selectDevice(device);
             }
 
             @Override
@@ -192,7 +222,9 @@ public class MainActivity extends Activity {
 
         Button reloadButton = new Button(this);
         reloadButton.setText("重新載入已配對裝置");
-        root.addView(reloadButton);
+        reloadButton.setAllCaps(false);
+        styleButton(reloadButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        deviceSection.addView(reloadButton, buttonParams(dp(50), 0, 0, 0, 0));
         reloadButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -200,19 +232,14 @@ public class MainActivity extends Activity {
             }
         });
 
+        LinearLayout actionSection = section(root, "傳送");
         sendButton = new Button(this);
         sendButton.setText("傳送到 Garmin");
         sendButton.setTextSize(24);
         sendButton.setTypeface(Typeface.DEFAULT_BOLD);
-        sendButton.setTextColor(Color.WHITE);
-        sendButton.setBackgroundColor(Color.rgb(0, 112, 74));
         sendButton.setAllCaps(false);
-        LinearLayout.LayoutParams sendButtonParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(88));
-        sendButtonParams.setMargins(0, dp(18), 0, dp(10));
-        sendButton.setLayoutParams(sendButtonParams);
-        root.addView(sendButton);
+        styleButton(sendButton, COLOR_PRIMARY, Color.WHITE, COLOR_PRIMARY_DARK);
+        actionSection.addView(sendButton, buttonParams(dp(92), 0, dp(8), 0, dp(10)));
         sendButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -224,15 +251,9 @@ public class MainActivity extends Activity {
         smartphoneLinkButton.setText("分享到 Smartphone Link");
         smartphoneLinkButton.setTextSize(20);
         smartphoneLinkButton.setTypeface(Typeface.DEFAULT_BOLD);
-        smartphoneLinkButton.setTextColor(Color.WHITE);
-        smartphoneLinkButton.setBackgroundColor(Color.rgb(70, 70, 70));
         smartphoneLinkButton.setAllCaps(false);
-        LinearLayout.LayoutParams smartphoneLinkButtonParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(68));
-        smartphoneLinkButtonParams.setMargins(0, dp(4), 0, dp(10));
-        smartphoneLinkButton.setLayoutParams(smartphoneLinkButtonParams);
-        root.addView(smartphoneLinkButton);
+        styleButton(smartphoneLinkButton, COLOR_DIAGNOSTIC, Color.WHITE, COLOR_DIAGNOSTIC);
+        actionSection.addView(smartphoneLinkButton, buttonParams(dp(68), 0, 0, 0, dp(10)));
         smartphoneLinkButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -242,51 +263,83 @@ public class MainActivity extends Activity {
 
         statusText = new TextView(this);
         statusText.setTextSize(14);
-        statusText.setPadding(0, dp(12), 0, dp(12));
-        root.addView(statusText);
+        statusText.setTextColor(COLOR_WARNING);
+        statusText.setPadding(dp(12), dp(10), dp(12), dp(10));
+        statusText.setBackground(cardBackground(0xFFFFF8E8, 0xFFF0D38A));
+        actionSection.addView(statusText);
+
+        LinearLayout diagnosticsSection = section(root, "診斷");
+
+        Button toggleDiagnosticsButton = new Button(this);
+        toggleDiagnosticsButton.setText("顯示診斷");
+        toggleDiagnosticsButton.setAllCaps(false);
+        styleButton(toggleDiagnosticsButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        diagnosticsSection.addView(toggleDiagnosticsButton, buttonParams(dp(50), 0, dp(8), 0, 0));
+
+        final LinearLayout diagnosticsContent = new LinearLayout(this);
+        diagnosticsContent.setOrientation(LinearLayout.VERTICAL);
+        diagnosticsContent.setVisibility(View.GONE);
+        diagnosticsSection.addView(diagnosticsContent);
+
+        toggleDiagnosticsButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                diagnosticsVisible = !diagnosticsVisible;
+                diagnosticsContent.setVisibility(diagnosticsVisible ? View.VISIBLE : View.GONE);
+                ((Button) v).setText(diagnosticsVisible ? "隱藏診斷" : "顯示診斷");
+                if (diagnosticsVisible) {
+                    refreshLogText();
+                }
+            }
+        });
 
         TextView rawShareLabel = label("收到的分享內容");
-        root.addView(rawShareLabel);
-
+        diagnosticsContent.addView(rawShareLabel);
         rawShareText = new TextView(this);
         rawShareText.setTextSize(12);
+        rawShareText.setTextColor(COLOR_TEXT);
         rawShareText.setTextIsSelectable(true);
-        rawShareText.setPadding(0, dp(4), 0, dp(10));
-        root.addView(rawShareText);
+        rawShareText.setPadding(dp(10), dp(8), dp(10), dp(10));
+        rawShareText.setBackground(cardBackground(0xFFF8FAFC, COLOR_BORDER));
+        diagnosticsContent.addView(rawShareText, buttonParams(LinearLayout.LayoutParams.WRAP_CONTENT, 0, dp(4), 0, dp(10)));
 
         TextView previewLabel = label("BT Request 預覽");
-        root.addView(previewLabel);
-
+        diagnosticsContent.addView(previewLabel);
         requestPreviewText = new TextView(this);
         requestPreviewText.setTextSize(12);
         requestPreviewText.setTypeface(Typeface.MONOSPACE);
+        requestPreviewText.setTextColor(COLOR_TEXT);
         requestPreviewText.setTextIsSelectable(true);
-        root.addView(requestPreviewText);
-
-        TextView logLabel = label("測試 Log");
-        root.addView(logLabel);
+        requestPreviewText.setPadding(dp(10), dp(8), dp(10), dp(10));
+        requestPreviewText.setBackground(cardBackground(0xFFF8FAFC, COLOR_BORDER));
+        diagnosticsContent.addView(requestPreviewText, buttonParams(LinearLayout.LayoutParams.WRAP_CONTENT, 0, dp(4), 0, dp(10)));
 
         Button toggleLogButton = new Button(this);
-        toggleLogButton.setText("顯示/隱藏 Log");
+        toggleLogButton.setText("顯示測試 Log");
         toggleLogButton.setAllCaps(false);
-        root.addView(toggleLogButton);
+        styleButton(toggleLogButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        diagnosticsContent.addView(toggleLogButton, buttonParams(dp(50), 0, 0, 0, dp(8)));
         toggleLogButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 logVisible = !logVisible;
                 logText.setVisibility(logVisible ? View.VISIBLE : View.GONE);
+                ((Button) v).setText(logVisible ? "隱藏測試 Log" : "顯示測試 Log");
                 refreshLogText();
             }
         });
 
         LinearLayout logActions = new LinearLayout(this);
         logActions.setOrientation(LinearLayout.HORIZONTAL);
-        root.addView(logActions);
+        diagnosticsContent.addView(logActions);
 
         Button copyLogButton = new Button(this);
         copyLogButton.setText("複製");
         copyLogButton.setAllCaps(false);
-        logActions.addView(copyLogButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+        styleButton(copyLogButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        LinearLayout.LayoutParams copyLogParams = new LinearLayout.LayoutParams(0, dp(50), 1);
+        copyLogParams.setMargins(0, 0, dp(6), 0);
+        logActions.addView(copyLogButton, copyLogParams);
         copyLogButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -297,7 +350,10 @@ public class MainActivity extends Activity {
         Button shareLogButton = new Button(this);
         shareLogButton.setText("分享");
         shareLogButton.setAllCaps(false);
-        logActions.addView(shareLogButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+        styleButton(shareLogButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        LinearLayout.LayoutParams shareLogParams = new LinearLayout.LayoutParams(0, dp(50), 1);
+        shareLogParams.setMargins(dp(3), 0, dp(3), 0);
+        logActions.addView(shareLogButton, shareLogParams);
         shareLogButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -308,7 +364,10 @@ public class MainActivity extends Activity {
         Button clearLogButton = new Button(this);
         clearLogButton.setText("清除");
         clearLogButton.setAllCaps(false);
-        logActions.addView(clearLogButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+        styleButton(clearLogButton, Color.WHITE, COLOR_TEXT, COLOR_BORDER);
+        LinearLayout.LayoutParams clearLogParams = new LinearLayout.LayoutParams(0, dp(50), 1);
+        clearLogParams.setMargins(dp(6), 0, 0, 0);
+        logActions.addView(clearLogButton, clearLogParams);
         clearLogButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -319,10 +378,16 @@ public class MainActivity extends Activity {
         logText = new TextView(this);
         logText.setTextSize(11);
         logText.setTypeface(Typeface.MONOSPACE);
+        logText.setTextColor(COLOR_TEXT);
         logText.setTextIsSelectable(true);
         logText.setVisibility(View.GONE);
-        logText.setPadding(0, dp(6), 0, dp(16));
-        root.addView(logText);
+        logText.setPadding(dp(10), dp(8), dp(10), dp(10));
+        logText.setBackground(cardBackground(0xFFF8FAFC, COLOR_BORDER));
+        LinearLayout.LayoutParams logParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        logParams.setMargins(0, dp(8), 0, 0);
+        diagnosticsContent.addView(logText, logParams);
 
         setContentView(scrollView);
         setStatus("請從 Google Maps 分享，或手動輸入座標。");
@@ -333,7 +398,10 @@ public class MainActivity extends Activity {
         EditText editText = new EditText(this);
         editText.setSingleLine(true);
         editText.setInputType(inputType);
-        root.addView(editText);
+        editText.setTextColor(COLOR_TEXT);
+        editText.setTextSize(18);
+        editText.setPadding(dp(10), 0, dp(10), 0);
+        root.addView(editText, buttonParams(dp(52), 0, dp(4), 0, dp(8)));
         return editText;
     }
 
@@ -341,8 +409,58 @@ public class MainActivity extends Activity {
         TextView label = new TextView(this);
         label.setText(text);
         label.setTypeface(Typeface.DEFAULT_BOLD);
-        label.setPadding(0, dp(10), 0, 0);
+        label.setTextColor(COLOR_TEXT);
+        label.setTextSize(13);
+        label.setPadding(0, dp(8), 0, 0);
         return label;
+    }
+
+    private LinearLayout section(LinearLayout root, String titleText) {
+        LinearLayout section = new LinearLayout(this);
+        section.setOrientation(LinearLayout.VERTICAL);
+        section.setPadding(dp(14), dp(12), dp(14), dp(14));
+        section.setBackground(cardBackground(COLOR_SURFACE, COLOR_BORDER));
+        if (Build.VERSION.SDK_INT >= 21) {
+            section.setElevation(dp(1));
+        }
+
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextColor(COLOR_TEXT);
+        title.setTextSize(18);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        section.addView(title);
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.setMargins(0, 0, 0, dp(12));
+        root.addView(section, params);
+        return section;
+    }
+
+    private void styleButton(Button button, int fillColor, int textColor, int strokeColor) {
+        button.setTextColor(textColor);
+        button.setBackground(cardBackground(fillColor, strokeColor));
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setPadding(dp(10), 0, dp(10), 0);
+    }
+
+    private LinearLayout.LayoutParams buttonParams(int height, int left, int top, int right, int bottom) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                height);
+        params.setMargins(left, top, right, bottom);
+        return params;
+    }
+
+    private GradientDrawable cardBackground(int fillColor, int strokeColor) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(fillColor);
+        drawable.setCornerRadius(dp(8));
+        drawable.setStroke(dp(1), strokeColor);
+        return drawable;
     }
 
     private void ensureBluetoothPermission() {
@@ -372,7 +490,10 @@ public class MainActivity extends Activity {
         BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
         loadingDevices = true;
         pairedDevices.clear();
+        garminDevices.clear();
+        deviceMenuDevices.clear();
         deviceAdapter.clear();
+        selectedDeviceMenuIndex = -1;
 
         if (adapter == null) {
             loadingDevices = false;
@@ -388,27 +509,70 @@ public class MainActivity extends Activity {
 
         Set<BluetoothDevice> bondedDevices = adapter.getBondedDevices();
         String selectedAddress = preferences.getString(PREF_DEVICE_ADDRESS, "");
-        int selectedIndex = -1;
+        int selectedAllIndex = -1;
 
         for (BluetoothDevice device : bondedDevices) {
             pairedDevices.add(device);
-            String name = safeDeviceName(device);
-            deviceAdapter.add(name + "  " + device.getAddress());
             if (device.getAddress().equals(selectedAddress)) {
-                selectedIndex = pairedDevices.size() - 1;
+                selectedAllIndex = pairedDevices.size() - 1;
+            }
+            if (isGarminDevice(device)) {
+                garminDevices.add(device);
             }
         }
 
-        deviceAdapter.notifyDataSetChanged();
-        if (selectedIndex >= 0) {
-            deviceSpinner.setSelection(selectedIndex);
+        int selectedMenuIndex = -1;
+        addDeviceMenuHeader("Garmin 裝置");
+        if (garminDevices.isEmpty()) {
+            addDeviceMenuHeader("未找到名稱含 Garmin 的裝置");
+        } else {
+            for (BluetoothDevice device : garminDevices) {
+                int menuIndex = addDeviceMenuItem(device);
+                if (device.getAddress().equals(selectedAddress)) {
+                    selectedMenuIndex = menuIndex;
+                }
+            }
         }
+
+        addDeviceMenuHeader("全部已配對裝置");
+        for (BluetoothDevice device : pairedDevices) {
+            int menuIndex = addDeviceMenuItem(device);
+            if (selectedMenuIndex < 0 && device.getAddress().equals(selectedAddress)) {
+                selectedMenuIndex = menuIndex;
+            }
+        }
+
+        if (selectedMenuIndex < 0 && !garminDevices.isEmpty()) {
+            selectedAddress = garminDevices.get(0).getAddress();
+            selectedMenuIndex = findDeviceMenuIndex(selectedAddress);
+        }
+
+        if (selectedMenuIndex < 0 && !pairedDevices.isEmpty()) {
+            selectedAddress = pairedDevices.get(0).getAddress();
+            selectedMenuIndex = findDeviceMenuIndex(selectedAddress);
+        }
+
+        deviceAdapter.notifyDataSetChanged();
+        if (selectedMenuIndex >= 0) {
+            selectedDeviceMenuIndex = selectedMenuIndex;
+            deviceSpinner.setSelection(selectedMenuIndex);
+        }
+
+        selectedDeviceAddress = selectedAddress;
+        if (selectedDeviceAddress.length() > 0) {
+            preferences.edit()
+                    .putString(PREF_DEVICE_ADDRESS, selectedDeviceAddress)
+                    .apply();
+        }
+
         loadingDevices = false;
 
         if (pairedDevices.isEmpty()) {
             setStatus("沒有已配對裝置。請先在 S23 系統 Bluetooth 設定與 Garmin 車機配對。");
-        } else if (selectedIndex >= 0) {
-            setStatus("已自動選擇上次使用的車機：" + safeDeviceName(pairedDevices.get(selectedIndex)));
+        } else if (selectedAllIndex >= 0) {
+            setStatus("已自動選擇上次使用的車機：" + safeDeviceName(findDeviceByAddress(selectedDeviceAddress)));
+        } else if (!garminDevices.isEmpty()) {
+            setStatus("已優先選擇 Garmin 裝置：" + safeDeviceName(garminDevices.get(0)));
         } else {
             setStatus("已載入 " + pairedDevices.size() + " 個已配對裝置。");
         }
@@ -497,7 +661,8 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (!GoogleMapsShareParser.extractGeocodeQueries(text).isEmpty()) {
+        if (!GoogleMapsShareParser.mayNeedRedirect(text)
+                && !GoogleMapsShareParser.extractGeocodeQueries(text).isEmpty()) {
             appendLog("GEOCODE", "queries=" + GoogleMapsShareParser.extractGeocodeQueries(text).toString());
             geocodeSharedText(text, "地址轉經緯度失敗。");
             return;
@@ -519,6 +684,7 @@ public class MainActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
+                            appendLog("REDIRECT", expandedText);
                             rawShareText.setText(expandedText);
                             if (expandedPlace != null) {
                                 applyPlace(expandedPlace);
@@ -675,8 +841,8 @@ public class MainActivity extends Activity {
             return;
         }
 
-        final int selected = deviceSpinner.getSelectedItemPosition();
-        if (selected < 0 || selected >= pairedDevices.size()) {
+        final BluetoothDevice device = findDeviceByAddress(selectedDeviceAddress);
+        if (device == null) {
             setStatus("請選擇 Garmin 車機。");
             return;
         }
@@ -697,7 +863,6 @@ public class MainActivity extends Activity {
         }
 
         final String name = nameInput.getText().toString();
-        final BluetoothDevice device = pairedDevices.get(selected);
         preferences.edit()
                 .putString(PREF_DEVICE_ADDRESS, device.getAddress())
                 .apply();
@@ -840,7 +1005,64 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void addDeviceMenuHeader(String text) {
+        deviceAdapter.add(text);
+        deviceMenuDevices.add(null);
+    }
+
+    private int addDeviceMenuItem(BluetoothDevice device) {
+        deviceAdapter.add("  " + safeDeviceName(device) + "  " + device.getAddress());
+        deviceMenuDevices.add(device);
+        return deviceMenuDevices.size() - 1;
+    }
+
+    private int findDeviceMenuIndex(String address) {
+        if (address == null || address.length() == 0) {
+            return -1;
+        }
+        for (int i = 0; i < deviceMenuDevices.size(); i++) {
+            BluetoothDevice device = deviceMenuDevices.get(i);
+            if (device != null && device.getAddress().equals(address)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void selectDevice(BluetoothDevice device) {
+        if (device == null) {
+            return;
+        }
+        selectedDeviceAddress = device.getAddress();
+        preferences.edit()
+                .putString(PREF_DEVICE_ADDRESS, selectedDeviceAddress)
+                .apply();
+        appendLog("DEVICE", "selected " + safeDeviceName(device) + " " + selectedDeviceAddress);
+    }
+
+    private BluetoothDevice findDeviceByAddress(String address) {
+        if (address != null && address.length() > 0) {
+            for (BluetoothDevice device : pairedDevices) {
+                if (device.getAddress().equals(address)) {
+                    return device;
+                }
+            }
+        }
+        if (!garminDevices.isEmpty()) {
+            return garminDevices.get(0);
+        }
+        return pairedDevices.isEmpty() ? null : pairedDevices.get(0);
+    }
+
+    private boolean isGarminDevice(BluetoothDevice device) {
+        String name = safeDeviceName(device).toLowerCase(Locale.US);
+        return name.indexOf("garmin") >= 0;
+    }
+
     private String safeDeviceName(BluetoothDevice device) {
+        if (device == null) {
+            return "Unknown Garmin";
+        }
         if (!hasBluetoothConnectPermission()) {
             return "Bluetooth device";
         }
