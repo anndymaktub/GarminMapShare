@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -30,6 +32,8 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 
 import java.util.ArrayList;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -38,7 +42,9 @@ public class MainActivity extends Activity {
     private static final int REQUEST_BLUETOOTH_CONNECT = 1001;
     private static final String PREFS = "garmin_map_share";
     private static final String PREF_DEVICE_ADDRESS = "device_address";
+    private static final String PREF_LOG = "log";
     private static final String SMARTPHONE_LINK_PACKAGE = "com.garmin.android.apps.phonelink";
+    private static final int MAX_LOG_CHARS = 30000;
 
     private final List<BluetoothDevice> pairedDevices = new ArrayList<BluetoothDevice>();
     private ArrayAdapter<String> deviceAdapter;
@@ -49,18 +55,23 @@ public class MainActivity extends Activity {
     private TextView statusText;
     private TextView requestPreviewText;
     private TextView rawShareText;
+    private TextView logText;
     private WebView mapPreview;
     private Button openGoogleMapsButton;
     private Button sendButton;
     private Button smartphoneLinkButton;
     private SharedPreferences preferences;
     private boolean loadingDevices;
+    private boolean logVisible;
+    private final StringBuilder logBuffer = new StringBuilder();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
+        logBuffer.append(preferences.getString(PREF_LOG, ""));
         buildUi();
+        appendLog("APP", "onCreate action=" + (getIntent() == null ? "null" : getIntent().getAction()));
         ensureBluetoothPermission();
         handleIntent(getIntent());
     }
@@ -69,6 +80,7 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        appendLog("APP", "onNewIntent action=" + (intent == null ? "null" : intent.getAction()));
         handleIntent(intent);
     }
 
@@ -80,6 +92,7 @@ public class MainActivity extends Activity {
                 loadPairedDevices();
             } else {
                 setStatus("缺少 Bluetooth 權限，S23 無法讀取已配對裝置或連線。");
+                appendLog("PERMISSION", "BLUETOOTH_CONNECT denied");
             }
         }
     }
@@ -250,6 +263,67 @@ public class MainActivity extends Activity {
         requestPreviewText.setTextIsSelectable(true);
         root.addView(requestPreviewText);
 
+        TextView logLabel = label("測試 Log");
+        root.addView(logLabel);
+
+        Button toggleLogButton = new Button(this);
+        toggleLogButton.setText("顯示/隱藏 Log");
+        toggleLogButton.setAllCaps(false);
+        root.addView(toggleLogButton);
+        toggleLogButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                logVisible = !logVisible;
+                logText.setVisibility(logVisible ? View.VISIBLE : View.GONE);
+                refreshLogText();
+            }
+        });
+
+        LinearLayout logActions = new LinearLayout(this);
+        logActions.setOrientation(LinearLayout.HORIZONTAL);
+        root.addView(logActions);
+
+        Button copyLogButton = new Button(this);
+        copyLogButton.setText("複製");
+        copyLogButton.setAllCaps(false);
+        logActions.addView(copyLogButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+        copyLogButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                copyLogToClipboard();
+            }
+        });
+
+        Button shareLogButton = new Button(this);
+        shareLogButton.setText("分享");
+        shareLogButton.setAllCaps(false);
+        logActions.addView(shareLogButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+        shareLogButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                shareLog();
+            }
+        });
+
+        Button clearLogButton = new Button(this);
+        clearLogButton.setText("清除");
+        clearLogButton.setAllCaps(false);
+        logActions.addView(clearLogButton, new LinearLayout.LayoutParams(0, dp(52), 1));
+        clearLogButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clearLog();
+            }
+        });
+
+        logText = new TextView(this);
+        logText.setTextSize(11);
+        logText.setTypeface(Typeface.MONOSPACE);
+        logText.setTextIsSelectable(true);
+        logText.setVisibility(View.GONE);
+        logText.setPadding(0, dp(6), 0, dp(16));
+        root.addView(logText);
+
         setContentView(scrollView);
         setStatus("請從 Google Maps 分享，或手動輸入座標。");
     }
@@ -354,6 +428,7 @@ public class MainActivity extends Activity {
         }
 
         rawShareText.setText(text);
+        appendLog("SHARE", text);
         parseSharedText(text);
     }
 
@@ -417,11 +492,13 @@ public class MainActivity extends Activity {
     private void parseSharedText(final String text) {
         SharedPlace place = GoogleMapsShareParser.parse(text);
         if (place != null) {
+            appendLog("PARSE", "direct lat=" + place.lat + " lon=" + place.lon + " name=" + place.name);
             applyPlace(place);
             return;
         }
 
         if (!GoogleMapsShareParser.extractGeocodeQueries(text).isEmpty()) {
+            appendLog("GEOCODE", "queries=" + GoogleMapsShareParser.extractGeocodeQueries(text).toString());
             geocodeSharedText(text, "地址轉經緯度失敗。");
             return;
         }
@@ -473,10 +550,12 @@ public class MainActivity extends Activity {
 
         if (!Geocoder.isPresent()) {
             setStatus("這支手機沒有可用的 Geocoder，無法把地址轉成經緯度。");
+            appendLog("GEOCODE", "Geocoder.isPresent=false");
             return;
         }
 
         setStatus("Google Maps 沒有直接座標，正在用地址轉經緯度：" + queries.get(0));
+        appendLog("GEOCODE", "start " + queries.toString());
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -485,8 +564,10 @@ public class MainActivity extends Activity {
                     @Override
                     public void run() {
                         if (result != null) {
+                            appendLog("GEOCODE", "success lat=" + result.lat + " lon=" + result.lon);
                             applyPlace(result);
                         } else {
+                            appendLog("GEOCODE", "failed " + queries.toString());
                             setStatus(failureMessage + " 已嘗試：" + queries.toString());
                         }
                     }
@@ -524,6 +605,7 @@ public class MainActivity extends Activity {
             nameInput.setText(place.name);
         }
         setStatus("已解析座標：lat=" + place.lat + ", lon=" + place.lon);
+        appendLog("PLACE", "applied lat=" + place.lat + " lon=" + place.lon + " name=" + place.name);
         updatePreview();
     }
 
@@ -537,8 +619,11 @@ public class MainActivity extends Activity {
             long latSemi = GarminCoordinateConverter.toSemiCircle(lat);
             long lonSemi = GarminCoordinateConverter.toSemiCircle(lon);
             setStatus("semi-circle: lat=" + latSemi + ", lon=" + lonSemi);
+            appendLog("REQUEST", "lat=" + lat + " lon=" + lon
+                    + " latSemi=" + latSemi + " lonSemi=" + lonSemi);
         } catch (IllegalArgumentException e) {
             setStatus(e.getMessage());
+            appendLog("REQUEST", "failed " + e.getMessage());
         }
     }
 
@@ -618,6 +703,10 @@ public class MainActivity extends Activity {
                 .apply();
         sendButton.setEnabled(false);
         setStatus("正在連線並傳送到 " + safeDeviceName(device) + "...");
+        appendLog("SEND", "start device=" + safeDeviceName(device)
+                + " address=" + device.getAddress()
+                + " lat=" + lat
+                + " lon=" + lon);
 
         new Thread(new Runnable() {
             @Override
@@ -629,9 +718,11 @@ public class MainActivity extends Activity {
                         public void run() {
                             sendButton.setEnabled(true);
                             setStatus("傳送完成。請確認 Garmin 車機是否收到目的地。");
+                            appendLog("SEND", "success");
                         }
                     });
                 } catch (final Exception e) {
+                    appendLog("SEND", "failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
@@ -648,8 +739,10 @@ public class MainActivity extends Activity {
         String shareText = buildSmartphoneLinkShareText();
         if (shareText.length() == 0) {
             setStatus("沒有可分享給 Smartphone Link 的座標或文字。");
+            appendLog("SMARTPHONE_LINK", "nothing to share");
             return;
         }
+        appendLog("SMARTPHONE_LINK", "shareText=" + shareText);
 
         Intent sendIntent = new Intent(Intent.ACTION_SEND);
         sendIntent.setType("text/plain");
@@ -660,8 +753,10 @@ public class MainActivity extends Activity {
         try {
             startActivity(sendIntent);
             setStatus("已開啟 Smartphone Link 分享入口。");
+            appendLog("SMARTPHONE_LINK", "direct ACTION_SEND started");
             return;
         } catch (ActivityNotFoundException ignored) {
+            appendLog("SMARTPHONE_LINK", "direct ACTION_SEND not found");
         }
 
         Intent chooserIntent = new Intent(Intent.ACTION_SEND);
@@ -672,8 +767,10 @@ public class MainActivity extends Activity {
         try {
             startActivity(Intent.createChooser(chooserIntent, "分享到 Smartphone Link"));
             setStatus("無法直接指定 Smartphone Link，已開啟系統分享選單。請選 Garmin Smartphone Link。");
+            appendLog("SMARTPHONE_LINK", "chooser started");
             return;
         } catch (ActivityNotFoundException ignored) {
+            appendLog("SMARTPHONE_LINK", "chooser failed");
         }
 
         Intent viewIntent = new Intent(Intent.ACTION_VIEW);
@@ -683,16 +780,20 @@ public class MainActivity extends Activity {
         try {
             startActivity(viewIntent);
             setStatus("已用 geo 連結開啟 Smartphone Link。");
+            appendLog("SMARTPHONE_LINK", "geo ACTION_VIEW started");
             return;
         } catch (ActivityNotFoundException ignored) {
+            appendLog("SMARTPHONE_LINK", "geo ACTION_VIEW not found");
         }
 
         Intent launchIntent = getPackageManager().getLaunchIntentForPackage(SMARTPHONE_LINK_PACKAGE);
         if (launchIntent != null) {
             startActivity(launchIntent);
             setStatus("找不到可直接分享的 Smartphone Link 入口，已改為開啟官方 App。");
+            appendLog("SMARTPHONE_LINK", "package launched");
         } else {
             setStatus("找不到 Smartphone Link 可用入口。若已安裝，請確認官方 App 可正常開啟，或從系統分享選單手動選它。");
+            appendLog("SMARTPHONE_LINK", "package launch intent null");
         }
     }
 
@@ -749,6 +850,64 @@ public class MainActivity extends Activity {
 
     private void setStatus(String message) {
         statusText.setText(message);
+        appendLog("STATUS", message);
+    }
+
+    private void appendLog(String tag, String message) {
+        String time = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date());
+        String safeMessage = message == null ? "" : message.replace('\r', ' ').trim();
+        logBuffer.append(time)
+                .append(" ")
+                .append(tag)
+                .append(" ")
+                .append(safeMessage)
+                .append("\n");
+
+        if (logBuffer.length() > MAX_LOG_CHARS) {
+            logBuffer.delete(0, logBuffer.length() - MAX_LOG_CHARS);
+        }
+
+        if (preferences != null) {
+            preferences.edit().putString(PREF_LOG, logBuffer.toString()).apply();
+        }
+        refreshLogText();
+    }
+
+    private void refreshLogText() {
+        if (logText != null) {
+            logText.setText(logBuffer.toString());
+        }
+    }
+
+    private void copyLogToClipboard() {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("GarminMapShare log", logBuffer.toString()));
+            setStatus("Log 已複製到剪貼簿。");
+        } else {
+            setStatus("無法取得剪貼簿服務。");
+        }
+    }
+
+    private void shareLog() {
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_SUBJECT, "GarminMapShare log");
+        intent.putExtra(Intent.EXTRA_TEXT, logBuffer.toString());
+        try {
+            startActivity(Intent.createChooser(intent, "分享 Log"));
+        } catch (ActivityNotFoundException e) {
+            setStatus("沒有可分享 Log 的 App。");
+        }
+    }
+
+    private void clearLog() {
+        logBuffer.setLength(0);
+        if (preferences != null) {
+            preferences.edit().remove(PREF_LOG).apply();
+        }
+        refreshLogText();
+        setStatus("Log 已清除。");
     }
 
     private int dp(int value) {

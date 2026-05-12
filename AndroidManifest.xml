@@ -30,6 +30,8 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
         android:label="Garmin Map Share"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity

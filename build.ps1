@@ -14,6 +14,7 @@ $Jar = Join-Path $JbrBin "jar.exe"
 
 $BuildDir = Join-Path $ProjectDir "build"
 $ObjDir = Join-Path $BuildDir "obj"
+$CompiledResDir = Join-Path $BuildDir "compiled-res"
 $ClassesDir = Join-Path $BuildDir "classes"
 $DexDir = Join-Path $BuildDir "dex"
 $OutDir = Join-Path $BuildDir "outputs"
@@ -46,10 +47,24 @@ function Invoke-Native {
 }
 
 Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $ObjDir, $ClassesDir, $DexDir, $OutDir | Out-Null
+New-Item -ItemType Directory -Force $ObjDir, $CompiledResDir, $ClassesDir, $DexDir, $OutDir | Out-Null
 Copy-Item -LiteralPath $Platform -Destination $CompilePlatform
 
-Invoke-Native $Aapt2 @(
+$ResDir = Join-Path $ProjectDir "res"
+if (Test-Path $ResDir) {
+    Invoke-Native $Aapt2 @(
+        "compile",
+        "--dir", $ResDir,
+        "-o", $CompiledResDir
+    )
+}
+
+$CompiledResources = @()
+if (Test-Path $CompiledResDir) {
+    $CompiledResources = Get-ChildItem -Path $CompiledResDir -Recurse -Filter *.flat | ForEach-Object { $_.FullName }
+}
+
+$AaptLinkArgs = @(
     "link",
     "-I", $Platform,
     "--manifest", $Manifest,
@@ -57,7 +72,8 @@ Invoke-Native $Aapt2 @(
     "-o", $UnsignedApk,
     "--min-sdk-version", "23",
     "--target-sdk-version", "36"
-)
+) + $CompiledResources
+Invoke-Native $Aapt2 $AaptLinkArgs
 
 $Sources = Get-ChildItem -Path (Join-Path $ProjectDir "src"), $ObjDir -Recurse -Filter *.java | ForEach-Object { $_.FullName }
 Invoke-Native $Javac (@("-encoding", "UTF-8", "-source", "8", "-target", "8", "-bootclasspath", $CompilePlatform, "-d", $ClassesDir) + $Sources)
