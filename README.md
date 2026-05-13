@@ -110,3 +110,7 @@ This fallback is useful for checking whether Smartphone Link can still consume t
 - The app only lists already paired devices; pair the Garmin unit before testing.
 - Google Maps short links may need network expansion or geocoding before coordinates can be extracted.
 - The embedded map preview uses OpenStreetMap inside a WebView for visual confirmation.
+
+## License
+
+Garmin Map Share is licensed under the GNU General Public License version 2 only (`GPL-2.0-only`). See `LICENSE`.
