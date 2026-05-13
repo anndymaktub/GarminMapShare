@@ -8,11 +8,32 @@ import java.util.List;
 
 final class GarminRouteRequestBuilder {
     private static final Charset UTF_8 = Charset.forName("UTF-8");
+    private static final String CRLF = "\r\n";
 
     private GarminRouteRequestBuilder() {
     }
 
     static byte[] build(double lat, double lon, String name) {
+        String body = buildBody(lat, lon, name);
+        int contentLength = body.getBytes(UTF_8).length;
+        String request = "POST /new-route HTTP/1.1" + CRLF
+                + "Host: gps-device" + CRLF
+                + "Content-Length: " + contentLength + CRLF
+                + CRLF
+                + body
+                + CRLF;
+        return request.getBytes(UTF_8);
+    }
+
+    static String buildPreview(double lat, double lon, String name) {
+        return new String(build(lat, lon, name), UTF_8);
+    }
+
+    static int buildBodyByteLength(double lat, double lon, String name) {
+        return buildBody(lat, lon, name).getBytes(UTF_8).length;
+    }
+
+    private static String buildBody(double lat, double lon, String name) {
         long latSemi = GarminCoordinateConverter.toSemiCircle(lat);
         long lonSemi = GarminCoordinateConverter.toSemiCircle(lon);
 
@@ -24,19 +45,7 @@ final class GarminRouteRequestBuilder {
             params.add("name=" + encode(name.trim()));
         }
 
-        String body = join(params, "&");
-        int contentLength = body.getBytes(UTF_8).length;
-        String request = "POST /new-route HTTP/1.1\r\n"
-                + "Host: gps-device\r\n"
-                + "Content-Length: " + contentLength + "\r\n"
-                + "\r\n"
-                + body
-                + "\r\n";
-        return request.getBytes(UTF_8);
-    }
-
-    static String buildPreview(double lat, double lon, String name) {
-        return new String(build(lat, lon, name), UTF_8);
+        return join(params, "&") + CRLF;
     }
 
     private static String encode(String value) {
